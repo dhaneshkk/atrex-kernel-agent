@@ -611,7 +611,7 @@ def print_analysis(sass_content, resource_content=None, arch="sm90"):
 
     # Spills
     spills = analyze_spills(sass_content, resource_content)
-    print(f"\n--- Register Spill Analysis ---")
+    print("\n--- Register Spill Analysis ---")
     if spills["register_count"] is not None:
         print(f"  Register usage: {spills['register_count']}")
     if spills["smem_bytes"] is not None:
@@ -619,7 +619,7 @@ def print_analysis(sass_content, resource_content=None, arch="sm90"):
     if spills["has_spills"]:
         print(f"  ❌ Spills detected! STL: {spills['stl_count']}, LDL: {spills['ldl_count']}")
     else:
-        print(f"  ✅ No spills (STL: 0, LDL: 0)")
+        print("  ✅ No spills (STL: 0, LDL: 0)")
 
     # Expected instructions
     expected = analyze_expected_instructions(sass_content, arch)
@@ -632,15 +632,15 @@ def print_analysis(sass_content, resource_content=None, arch="sm90"):
     if expected["has_tensor_core"]:
         print(f"  ✅ Tensor core instructions present: {', '.join(expected['tensor_found']) or 'MMA'}")
     else:
-        print(f"  ❌ Tensor core instructions not detected")
+        print("  ❌ Tensor core instructions not detected")
     if expected["has_async_copy"]:
         print(f"  ✅ Async copy instructions present: {', '.join(expected['async_found']) or 'TMA'}")
     else:
-        print(f"  ⚠️  Async copy instructions not detected")
+        print("  ⚠️  Async copy instructions not detected")
 
     # Load width
     widths = analyze_load_width(sass_content)
-    print(f"\n--- Instruction Width Analysis ---")
+    print("\n--- Instruction Width Analysis ---")
     for op_type, counts in widths.items():
         total = sum(counts.values())
         if total > 0:
@@ -652,22 +652,22 @@ def print_analysis(sass_content, resource_content=None, arch="sm90"):
 
     # Scalar fallback
     scalar = analyze_scalar_fallback(sass_content)
-    print(f"\n--- Scalar Fallback Detection ---")
+    print("\n--- Scalar Fallback Detection ---")
     print(f"  Tensor core instructions: {scalar['tensor_total']} "
           f"(HMMA:{scalar['tensor_hmma']}, WGMMA:{scalar['tensor_wgmma']}, "
           f"MMA:{scalar['tensor_mma']}, TCGEN05:{scalar['tensor_tcgen05']})")
     print(f"  Scalar arithmetic instructions: {scalar['scalar_total']} "
           f"(FMUL:{scalar['scalar_fmul']}, FFMA:{scalar['scalar_ffma']})")
     if scalar["no_tensor_at_all"]:
-        print(f"  ❌ No tensor core instructions at all, entirely scalar path")
+        print("  ❌ No tensor core instructions at all, entirely scalar path")
     elif scalar["is_scalar_heavy"]:
         print(f"  ⚠️  Scalar instructions far exceed tensor core ({scalar['scalar_total']} vs {scalar['tensor_total']})")
     else:
-        print(f"  ✅ Tensor/scalar ratio is normal")
+        print("  ✅ Tensor/scalar ratio is normal")
 
     # Instruction mix
     mix = analyze_instruction_mix(sass_content)
-    print(f"\n--- Instruction Classification Breakdown ---")
+    print("\n--- Instruction Classification Breakdown ---")
     print(f"  Total instructions: {mix['total']}")
     for cat, pct in mix["percentages"].items():
         count = mix["counts"][cat]

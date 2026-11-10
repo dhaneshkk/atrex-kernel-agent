@@ -15,7 +15,7 @@
         "name": "aka.light.agent.plugin",
         "required": true,
         "config": {
-          "sandbox": "none",
+          "sandbox": "auto",
           "capture": true
         }
       }

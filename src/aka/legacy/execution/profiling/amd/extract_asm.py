@@ -174,11 +174,11 @@ def analyze_accvgpr_moves(asm_content):
 def print_analysis(asm_content):
     """Print the full analysis report"""
     print(f"{'='*60}")
-    print(f"  Assembly Analysis Report")
+    print("  Assembly Analysis Report")
     print(f"{'='*60}")
 
     width = analyze_load_width(asm_content)
-    print(f"\n--- Instruction Width Analysis ---")
+    print("\n--- Instruction Width Analysis ---")
     for op_type, counts in width.items():
         total = sum(counts.values())
         if total > 0:
@@ -189,23 +189,23 @@ def print_analysis(asm_content):
                     print(f"    {marker} {w}: {c}")
 
     bpermute_count, bpermute_lines = analyze_bpermute(asm_content)
-    print(f"\n--- ds_bpermute Analysis ---")
+    print("\n--- ds_bpermute Analysis ---")
     if bpermute_count == 0:
-        print(f"  ✅ No ds_bpermute instructions")
+        print("  ✅ No ds_bpermute instructions")
     else:
         print(f"  ⚠️  Found {bpermute_count} ds_bpermute instructions")
 
     scratch = analyze_scratch(asm_content)
-    print(f"\n--- Register Spill Analysis ---")
+    print("\n--- Register Spill Analysis ---")
     print(f"  VGPR usage: {scratch['vgpr_count']}")
     print(f"  VGPR spills: {scratch['vgpr_spill_count']}")
     if scratch["vgpr_spill_count"] > 0:
         print(f"  ❌ VGPR spills detected!scratch_load: {scratch['scratch_loads']}, scratch_store: {scratch['scratch_stores']}")
     elif scratch["vgpr_spill_count"] == 0:
-        print(f"  ✅ No VGPR spills")
+        print("  ✅ No VGPR spills")
 
     accvgpr = analyze_accvgpr_moves(asm_content)
-    print(f"\n--- AGPR Transfer Analysis ---")
+    print("\n--- AGPR Transfer Analysis ---")
     print(f"  v_accvgpr_read_b32:  {accvgpr['accvgpr_reads']}")
     print(f"  v_accvgpr_write_b32: {accvgpr['accvgpr_writes']}")
 

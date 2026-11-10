@@ -15,8 +15,10 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 
-# Local and temporary test scripts
-tests/
+# Local and temporary test scripts; committed suites are test_*.py and conftest.py
+tests/*
+!tests/test_*.py
+!tests/conftest.py
 
 # Distribution build artifacts
 build/

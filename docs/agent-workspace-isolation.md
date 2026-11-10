@@ -1,9 +1,29 @@
 # Agent workspace isolation
 
-The default `light` profile runs a native coding-agent process with capture on macOS/Linux.
-Select `light-sandbox` for coordinator-side Bubblewrap isolation on Linux.
-This is separate from the remote GPU executor. An explicit Bubblewrap selection fails
-when the host cannot provide it; it does not fall back to native execution.
+The default `light` profile uses `sandbox: "auto"`: on a Linux coordinator where `bwrap`
+is installed and can create a user namespace, the coding agent runs inside Bubblewrap;
+otherwise (macOS, or Linux without a usable `bwrap`) it runs natively and AKA prints a
+warning. Select `light-sandbox` (or `sandbox: "bwrap"`) to require isolation: an explicit
+Bubblewrap selection fails when the host cannot provide it and never falls back.
+Set `ATREX_AGENT_REQUIRE_SANDBOX=1` to make any unisolated launch an error.
+This is separate from the remote GPU executor.
+
+## Threat model
+
+AKA promotes code written by an LLM that is rewarded for passing the Supervisor's
+checks. Treat the agent as untrusted with respect to the evaluator:
+
+- **Native (`sandbox: "none"`)**: the agent runs as the Supervisor's OS user. Private
+  reference inputs, Supervisor storage and Gateway credentials are removed from the agent's
+  *environment* but remain readable on disk if the agent finds them. This is suitable only
+  for trusted, supervised development runs.
+- **Bubblewrap**: the agent sees an allowlisted filesystem (system runtime, its workspace,
+  its Session Home and explicit grants). Supervisor-private paths are not mounted.
+  Network access is not namespaced; GPU and Wiki access goes through the Supervisor's
+  capability-scoped localhost HTTP service.
+- **`session_shell_guard.sh`** is a guardrail that stops common accidental actions (killing
+  the shared gateway, deleting tracked state, importing GPU/JIT modules on the host). It is
+  not a security boundary: absolute interpreter paths, `env python3`, or scripts bypass it.
 
 ## Launch and configuration
 
@@ -42,7 +62,7 @@ environment from these options.
 
 | Option | Meaning |
 | --- | --- |
-| `sandbox` | `none` or `bwrap` |
+| `sandbox` | `auto` (default; Bubblewrap when usable on Linux), `none`, or `bwrap` (required) |
 | `capture` | Diagnostic capture, independent of filesystem isolation |
 | `bwrap_executable` | Bubblewrap executable, default `bwrap` |
 | `read_only_paths` | Explicit extra installation/runtime paths |

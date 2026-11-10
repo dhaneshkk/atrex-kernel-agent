@@ -11,12 +11,13 @@ from aka.contracts.evaluation import (
     derived_evaluation_timeout,
 )
 from aka.legacy.evaluation.abba import (
-    verification_schedule, _geomean, _merge_batch_results,
-    _result_latency, _result_performance_score,
+    verification_schedule, geomean as _geomean, merge_batch_results as _merge_batch_results,
+    result_latency as _result_latency, result_performance_score as _result_performance_score,
 )
 from aka.light.evaluation.policy import SHAPE_BATCH_SIZE, BATCH_WORKERS, validate_abba_repeats
 from aka.light.execution.config import DEFAULT_QUEUE_WAIT_GRACE
 
+from aka.light.acceptance.noise_gate import NoisePolicy, decide
 from aka.light.workflow.models import VerificationResult, VerificationRun
 
 ABBA_RESULT_PREFIX = "__ATREX_LONG_HORIZON_ABBA_RESULT__="
@@ -27,12 +28,17 @@ DEFAULT_SHAPE_BATCH_WORKERS = BATCH_WORKERS
 def score_verification_payload(
     payload: object, *, schedule: list[dict[str, int | str]], repeats: int,
     min_improvement_pct: float, artifact: str = "",
+    noise_policy: NoisePolicy | None = None,
 ) -> VerificationResult:
-    """Light retention policy: strict GeoMean latency reduction, as in Runtime.
+    """Light retention policy: GeoMean latency reduction that survives noise.
 
-    Main's score-based policy remains unchanged in aka.legacy.evaluation.abba.
-    Scores are optional diagnostic values and cannot enable or veto promotion.
+    The GeoMean reduction must exceed ``min_improvement_pct`` *and* pass the
+    noise checks in ``aka.light.acceptance.noise_gate`` (paired agreement,
+    incumbent noise floor, per-Shape regression cap). Main's score-based
+    policy remains unchanged in aka.legacy.evaluation.abba. Scores are optional
+    diagnostic values and cannot enable or veto promotion.
     """
+    policy = noise_policy if noise_policy is not None else NoisePolicy.from_environment()
     if not math.isfinite(min_improvement_pct) or min_improvement_pct < 0:
         raise ValueError("Minimum latency improvement must be finite and non-negative")
     rows = payload.get("runs") if isinstance(payload, dict) else None
@@ -42,6 +48,8 @@ def score_verification_payload(
         return VerificationResult("ERROR", None, None, None, artifact=artifact, error="Incomplete ABBA schedule")
     sides = {"candidate": [], "incumbent": []}
     scores = {"candidate": [], "incumbent": []}
+    shapes = {"candidate": [], "incumbent": []}
+    by_repeat: dict[int, dict[str, float]] = {}
     runs = []
     for row in rows:
         result = row.get("result")
@@ -51,6 +59,13 @@ def score_verification_payload(
             latency = None
         if row.get("exit_code") == 0 and isinstance(result, dict) and result.get("all_pass") is True and latency:
             sides[row["revision"]].append(latency)
+            by_repeat.setdefault(int(row["repeat"]), {})[row["revision"]] = float(latency)
+            per_shape = result.get("latency_us_by_shape")
+            if isinstance(per_shape, dict):
+                shapes[row["revision"]].append({
+                    str(name): float(value) for name, value in per_shape.items()
+                    if type(value) in (int, float) and math.isfinite(value) and value > 0
+                })
             if score := _result_performance_score(result):
                 scores[row["revision"]].append(score)
     candidate, incumbent = (_geomean(sides[side]) for side in ("candidate", "incumbent"))
@@ -61,11 +76,24 @@ def score_verification_payload(
         verdict.error = "Not every ABBA run passed with a valid GeoMean latency"
         return verdict
     verdict.improvement_pct = (incumbent - candidate) / incumbent * 100
-    if (verdict.improvement_pct > min_improvement_pct
+    if not (verdict.improvement_pct > min_improvement_pct
             and not math.isclose(verdict.improvement_pct, min_improvement_pct, rel_tol=1e-12, abs_tol=1e-12)):
+        verdict.error = f"GeoMean latency reduction {verdict.improvement_pct:.3f}% did not exceed {min_improvement_pct:.3f}%"
+        return verdict
+    noise = decide(
+        improvement_pct=verdict.improvement_pct,
+        paired=[(pair["candidate"], pair["incumbent"]) for _, pair in sorted(by_repeat.items())
+                if "candidate" in pair and "incumbent" in pair],
+        incumbent_latencies=sides["incumbent"],
+        candidate_shapes=shapes["candidate"],
+        incumbent_shapes=shapes["incumbent"],
+        policy=policy,
+    )
+    verdict.noise = noise.as_dict()
+    if noise.passed:
         verdict.gate = "PASS"
     else:
-        verdict.error = f"GeoMean latency reduction {verdict.improvement_pct:.3f}% did not exceed {min_improvement_pct:.3f}%"
+        verdict.error = "Noise-aware promotion check failed: " + "; ".join(noise.reasons)
     return verdict
 
 

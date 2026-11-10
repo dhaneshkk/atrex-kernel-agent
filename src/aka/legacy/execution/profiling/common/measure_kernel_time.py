@@ -121,7 +121,7 @@ def main():
         sys.exit(1)
 
     print(f"{'='*60}")
-    print(f"  Kernel latency measurement results")
+    print("  Kernel latency measurement results")
     print(f"{'='*60}")
     print(f"  p20 (fast): {p20:.4f} ms")
     print(f"  p50 (median): {p50:.4f} ms")

@@ -2579,7 +2579,8 @@ def _auth_headers() -> dict[str, str]:
     if not ak or not sk:
         return {}
     ts = str(int(time.time() * 1000))
-    token = hashlib.md5(f"{ak}::{sk}::{ts}".encode()).hexdigest()
+    # Agate wire format (not an HMAC); see aka.light.evaluation.gateway.
+    token = hashlib.md5(f"{ak}::{sk}::{ts}".encode(), usedforsecurity=False).hexdigest()
     return {"Access-Key": ak, "Timestamp": ts, "Token": token}
 
 

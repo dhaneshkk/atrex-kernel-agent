@@ -23,7 +23,10 @@ class AgentOptions:
 
     def __post_init__(self):
         from .execution_clock import validate_timeout
+        from .sandbox import resolve_sandbox_mode
         validate_timeout(self.timeout_seconds, "timeout_seconds")
+        # Resolve "auto" once so every consumer sees a concrete none/bwrap mode.
+        object.__setattr__(self, "sandbox", resolve_sandbox_mode(self.sandbox, self.bwrap_executable))
 
     def environment(self):
         return {

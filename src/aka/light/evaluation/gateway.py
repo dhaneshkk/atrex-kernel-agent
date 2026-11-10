@@ -2902,7 +2902,12 @@ def _auth_headers() -> dict[str, str]:
     if not ak or not sk:
         return {}
     ts = str(int(time.time() * 1000))
-    token = hashlib.md5(f"{ak}::{sk}::{ts}".encode()).hexdigest()
+    # Wire format required by the Agate server; the client cannot change it alone.
+    # Known limitation: this is not an HMAC and does not cover method, path or
+    # body, so a captured header set is replayable to any endpoint until the
+    # server's timestamp window expires. Keep the Gateway URL on HTTPS and push
+    # for an HMAC-SHA256 request signature on the server side.
+    token = hashlib.md5(f"{ak}::{sk}::{ts}".encode(), usedforsecurity=False).hexdigest()
     return {"Access-Key": ak, "Timestamp": ts, "Token": token}
 
 
