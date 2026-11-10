@@ -7,6 +7,7 @@ operations use the Supervisor HTTP service rather than Agent-side credentials.
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import platform
@@ -24,7 +25,86 @@ from aka.light.agent.sandbox_launch import SandboxLaunch
 
 from aka.light.runtime.paths import SESSION_SHELL_GUARD, legacy_resource_root
 
-REPOSITORY_ROOT = legacy_resource_root()
+SANDBOX_MODES = ("none", "bwrap", "auto")
+REQUIRE_SANDBOX_ENV = "ATREX_AGENT_REQUIRE_SANDBOX"
+_WARNED_UNISOLATED = False
+
+
+@functools.lru_cache(maxsize=None)
+def _repository_root() -> Path:
+    # Resolved on first use, not at import: importing this module must not
+    # require AKA_LEGACY_REPO_ROOT (installed wheels, tooling, tests).
+    return legacy_resource_root()
+
+
+def __getattr__(name: str):
+    # Backwards-compatible lazy alias for the former module constant.
+    if name == "REPOSITORY_ROOT":
+        return _repository_root()
+    raise AttributeError(name)
+
+
+def _bwrap_usable(executable: str) -> bool:
+    """Probe that Bubblewrap can create a user namespace on this host.
+
+    ``bwrap`` may be installed while unprivileged user namespaces are disabled
+    (e.g. AppArmor restrictions), in which case every Agent launch would fail.
+    """
+    try:
+        result = subprocess.run(
+            [executable, "--unshare-user", "--ro-bind", "/", "/", "--", "/bin/true"],
+            capture_output=True, timeout=10, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
+def resolve_sandbox_mode(mode: str, bwrap_executable: str = "bwrap",
+                         environment: dict[str, str] | None = None) -> str:
+    """Turn ``auto`` into ``bwrap`` or ``none``; explicit modes pass through.
+
+    ``auto`` selects Bubblewrap on Linux when it is installed and usable, and
+    falls back to native execution elsewhere.
+    """
+    environment = os.environ if environment is None else environment
+    if mode not in SANDBOX_MODES:
+        raise ValueError("Agent sandbox must be none, bwrap or auto")
+    if mode == "auto":
+        executable = shutil.which(bwrap_executable, path=environment.get("PATH"))
+        mode = ("bwrap" if platform.system() == "Linux" and executable and _bwrap_usable(executable)
+                else "none")
+    return mode
+
+
+def enforce_isolation_policy(mode: str, *environments: dict[str, str]) -> None:
+    """Warn once, or fail closed, when an Agent is about to run without isolation.
+
+    Native execution runs the coding agent as the Supervisor's own OS user, so
+    Supervisor-private evaluator inputs and credentials are hidden only by
+    path, not enforced. ``ATREX_AGENT_REQUIRE_SANDBOX=1`` (in the Supervisor or
+    Agent environment) turns the warning into an error.
+    """
+    global _WARNED_UNISOLATED
+    if mode != "none":
+        return
+    for environment in (*environments, os.environ):
+        if environment.get(REQUIRE_SANDBOX_ENV, "").strip().lower() in {"1", "true", "yes"}:
+            raise RuntimeError(
+                f"{REQUIRE_SANDBOX_ENV} is set but Agent isolation is unavailable or disabled; "
+                "install a usable bwrap on a Linux coordinator or unset the requirement"
+            )
+    if not _WARNED_UNISOLATED:
+        _WARNED_UNISOLATED = True
+        print(
+            "atrex WARNING: the coding agent runs WITHOUT isolation (sandbox=none). It shares the "
+            "Supervisor's OS user and can read private evaluator inputs and credentials. Use "
+            "sandbox=bwrap (or the light-sandbox profile) for untrusted agents; set "
+            f"{REQUIRE_SANDBOX_ENV}=1 to refuse unisolated launches.",
+            file=sys.stderr,
+        )
+
+
 PUBLIC_ASSETS = (
     "tools",
     "skills",
@@ -76,10 +156,12 @@ def sandbox_executable(environment: dict[str, str]) -> str | None:
     if environment.get("ATREX_AGENT_PROC_MODE", "private") not in {"private", "projected"}:
         raise ValueError("ATREX_AGENT_PROC_MODE must be private or projected")
     mode = environment.get("ATREX_AGENT_SANDBOX", "none")
+    if mode == "auto":
+        mode = resolve_sandbox_mode(mode, environment.get("ATREX_BWRAP_EXECUTABLE", "bwrap"), environment)
     if mode == "none":
         return None
     if mode != "bwrap":
-        raise ValueError("ATREX_AGENT_SANDBOX must be none or bwrap")
+        raise ValueError("ATREX_AGENT_SANDBOX must be none, bwrap or auto")
     if platform.system() != "Linux":
         raise RuntimeError(
             "Agent Bubblewrap requires a Linux coordinator; use Lima/Linux, "
@@ -186,6 +268,7 @@ def wrap_agent_command(
 ) -> tuple[SandboxLaunch, AuxiliaryWorkspace | None]:
     executable = sandbox_executable(environment)
     if executable is None:
+        enforce_isolation_policy("none", environment)
         if auxiliary_input_files:
             raise ValueError("Explicit auxiliary inputs require a Bubblewrap auxiliary workspace")
         native_environment = {
@@ -194,7 +277,7 @@ def wrap_agent_command(
         }
         return SandboxLaunch(list(command), native_environment), None
     workspace = workspace.resolve(strict=True)
-    if REPOSITORY_ROOT.is_relative_to(workspace):
+    if _repository_root().is_relative_to(workspace):
         raise ValueError(
             "Run optimization in a Campaign workspace, not the AKA source checkout or its parent"
         )
@@ -255,7 +338,7 @@ def wrap_agent_command(
         # Do not re-expose the repository's retired workflows or evaluator code.
         assets = PUBLIC_ASSETS if view is None and not environment.get("ATREX_AKA_RUNTIME_URL") else ()
         for name in assets:
-            source = REPOSITORY_ROOT / name
+            source = _repository_root() / name
             if source.exists():
                 _mount(argv, source.resolve(), source)
         # BASH_ENV and its mount must name the same packaged Light asset.
@@ -275,7 +358,7 @@ def wrap_agent_command(
         else:
             common = None if managed else git_directory(workspace)
             if common:
-                if common == git_directory(REPOSITORY_ROOT):
+                if common == git_directory(_repository_root()):
                     raise ValueError(
                         "Run optimization in a Campaign workspace, not the AKA source checkout"
                     )
@@ -322,7 +405,7 @@ def wrap_agent_command(
                     # require real directories and reject every symlink.
                     if (not managed and not environment.get("ATREX_AKA_RUNTIME_URL")
                             and source.is_symlink()
-                            and source.resolve(strict=True) == REPOSITORY_ROOT / name):
+                            and source.resolve(strict=True) == _repository_root() / name):
                         continue
                     if source.is_symlink() or source.resolve() != source:
                         raise ValueError("Managed assets must not traverse symlinks")
@@ -348,7 +431,7 @@ def wrap_agent_command(
                 host_home=host_home, session_home_root=home.parent,
                 private_paths=private_paths,
             )
-        forbidden = (workspace, home.parent, REPOSITORY_ROOT / ".git", *private_paths)
+        forbidden = (workspace, home.parent, _repository_root() / ".git", *private_paths)
         installations = projected_backends(environment)
         if view is None and not environment.get("ATREX_AKA_RUNTIME_URL"):
             installations += ("agate",)
@@ -377,7 +460,7 @@ def wrap_agent_command(
                 for root in (workspace, home.parent, *private_paths)
             ):
                 raise ValueError(f"Read-only grant overlaps Agent workspace/state: {path}")
-            if path in {Path("/"), host_home, REPOSITORY_ROOT}:
+            if path in {Path("/"), host_home, _repository_root()}:
                 raise ValueError(f"Read-only grant is too broad: {path}")
             _mount(argv, path, path)
         # Preserve the pre-PR CLI command and cwd; no prompt rewriting is needed.

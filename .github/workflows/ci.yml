@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install test tools
+        run: python -m pip install pytest ruff build
+      - name: Lint (syntax errors, undefined names, unsafe eval)
+        run: ruff check --select E9,F63,F7,F82,S307 src observability tools gpu-wiki/tools tests
+      - name: Unit tests
+        run: python -m pytest -q tests
+      - name: GPU Wiki tool tests
+        working-directory: gpu-wiki/tools
+        run: python -m pytest -q .
+      - name: Build and install distributions
+        run: |
+          python tools/build_distributions.py --output dist atrex-aka-framework atrex-aka-legacy atrex-aka-light
+          python -m pip install --no-index --find-links dist atrex-aka-light
+          cd /tmp && aka --help

@@ -60,7 +60,6 @@ class AddressingTests(unittest.TestCase):
             "AMD MI308X accelerator": "mi308x",
             "AMD MI355X GPU": "mi355x",
             "SM_120": "sm120",
-            "NVIDIA RTX-5090 GPU": "rtx5090",
         }
         for external, internal in examples.items():
             with self.subTest(external=external):

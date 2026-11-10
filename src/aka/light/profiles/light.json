@@ -53,5 +53,5 @@
     "light_journal",
     "wiki"
   ],
-  "doc": "Default optimizer launch: managed AKA-light services with native Agent execution; Bubblewrap is not enabled."
+  "doc": "Default optimizer launch: managed AKA-light services; the Agent uses Bubblewrap automatically on Linux when it is usable, and native execution (with a warning) elsewhere."
 }

@@ -354,3 +354,11 @@ def interpret_verification_payload(
         candidate_performance_score=candidate_score,
         incumbent_performance_score=incumbent_score,
     )
+
+
+# Public names for helpers shared with aka.light. The underscored originals
+# stay for existing legacy callers.
+geomean = _geomean
+merge_batch_results = _merge_batch_results
+result_latency = _result_latency
+result_performance_score = _result_performance_score

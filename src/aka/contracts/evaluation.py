@@ -22,7 +22,10 @@ DEFAULT_PERFORMANCE_TIMEOUT = 300
 # One A or B run uses the same default execution budget as an ordinary
 # performance measurement. Operators may still override either limit.
 DEFAULT_ABBA_RUN_TIMEOUT = DEFAULT_PERFORMANCE_TIMEOUT
-DEFAULT_ABBA_REPEATS = 2
+# Two A/B/B/A blocks per side by default: one block yields a single paired
+# ratio and no incumbent noise estimate, so noise-aware promotion
+# (aka.light.acceptance.noise_gate) needs at least four measurements per side.
+DEFAULT_ABBA_REPEATS = 4
 ABBA_SCHEDULING_OVERHEAD = 30
 MAX_TYPED_GATEWAY_JOB_TIMEOUT = 10_800
 

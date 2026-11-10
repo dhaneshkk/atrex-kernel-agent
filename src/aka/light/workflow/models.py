@@ -52,12 +52,15 @@ class SessionResult:
 class VerificationResult(SharedVerificationResult):
     gateway_record_id: str = ""
     reused: bool = False
+    # Diagnostics from aka.light.acceptance.noise_gate; empty when not evaluated.
+    noise: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
             **super().as_dict(),
             "gateway_record_id": self.gateway_record_id or None,
             "reused": self.reused,
+            "noise": self.noise or None,
         }
 
 

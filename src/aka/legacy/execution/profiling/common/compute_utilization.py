@@ -37,14 +37,16 @@ Supported GPUs (built-in specs):
   --peak-bandwidth-tb-s; the tool never fabricates specs it does not have.
 
 Usage:
-    python profiling/common/compute_utilization.py         --gpu h20 --dtype bf16         --flops-expr "2*BM*BN*K" --bytes-expr "(BM*K + BN*K + BM*BN)*2"         --time-ms 0.5 --grid-blocks 64
+    python profiling/common/compute_utilization.py         --gpu h20 --dtype bf16         --var BM=128 --var BN=128 --var K=4096         --flops-expr "2*BM*BN*K" --bytes-expr "(BM*K + BN*K + BM*BN)*2"         --time-ms 0.5 --grid-blocks 64
 
-    python profiling/common/compute_utilization.py         --gpu h100 --dtype bf16         --flops-expr "2*BM*BN*K" --bytes-expr "(BM*K + BN*K + BM*BN)*2"         --time-ms 0.05 --grid-blocks 16         --measured-bandwidth-tb-s 2.8
+    python profiling/common/compute_utilization.py         --gpu h100 --dtype bf16         --var BM=128 --var BN=128 --var K=4096         --flops-expr "2*BM*BN*K" --bytes-expr "(BM*K + BN*K + BM*BN)*2"         --time-ms 0.05 --grid-blocks 16         --measured-bandwidth-tb-s 2.8
 
     python profiling/common/compute_utilization.py         --flops 134217728 --bytes 1212416         --time-ms 0.5 --grid-blocks 64         --gpu mi300x --dtype bf16
 """
 
 import argparse
+import ast
+import operator
 import sys
 import os
 import shutil
@@ -428,23 +430,23 @@ def _print_theoretical_ceiling(ceiling: dict):
     )
 
     print(f"\n{'='*64}")
-    print(f"  Theoretical Performance Ceiling")
+    print("  Theoretical Performance Ceiling")
     print(f"{'='*64}")
     print(f"  GPU              : {ceiling['gpu'].upper()} ({desc})")
     print(f"  dtype          : {ceiling['dtype']}")
     print(f"  Bottleneck       : {bottleneck_label}")
-    print(f"  ─────────────────────────────────────────")
+    print("  ─────────────────────────────────────────")
     print(f"  Tile AI          : {ceiling['arithmetic_intensity']:.2f} FLOPs/Byte")
     print(f"  Ridge Point      : {ceiling['ridge_point']:.2f} FLOPs/Byte")
-    print(f"  ─────────────────────────────────────────")
+    print("  ─────────────────────────────────────────")
     print(f"  Grid blocks      : {ceiling['grid_blocks']}")
     print(f"  {unit_type} count       : {ceiling['num_units']}")
     print(f"  Scheduling waves : {ceiling['num_waves']}")
     print(f"  {unit_type} utilization : {ceiling['unit_utilization_pct']:.1f}%")
-    print(f"  ─────────────────────────────────────────")
+    print("  ─────────────────────────────────────────")
     print(f"  Per-tile min time : {ceiling['tile_time_min_ms']:.6f} ms")
     print(f"  Kernel min time   : {ceiling['theoretical_kernel_time_ms']:.4f} ms")
-    print(f"  ─────────────────────────────────────────")
+    print("  ─────────────────────────────────────────")
     print(f"  Compute ceiling  : {ceiling['theoretical_tflops']:.2f} TFLOPS"
           f" (peak {ceiling['peak_tflops']:.1f} TFLOPS)")
     print(f"  Bandwidth ceiling: {ceiling['theoretical_bandwidth_tb_s']:.2f} TB/s"
@@ -498,11 +500,57 @@ def measure_kernel_time(kernel_file, wrapper_name, setup_name, warmup=25, rep=10
     return ms
 
 
-def _eval_expr(expr: str, label: str) -> float:
-    """Evaluate a numeric Python expression."""
+_ARITHMETIC_OPERATORS = {
+    ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
+    ast.Div: operator.truediv, ast.FloorDiv: operator.floordiv, ast.Mod: operator.mod,
+    ast.Pow: operator.pow, ast.USub: operator.neg, ast.UAdd: operator.pos,
+}
+
+
+def safe_arithmetic(expr: str, variables: dict[str, float] | None = None) -> float:
+    """Evaluate +, -, *, /, //, %, ** over numbers and named variables only.
+
+    Replaces ``eval``: no attribute access, calls, subscripts or builtins, so a
+    pasted expression cannot execute code.
+    """
+    variables = variables or {}
+
+    def visit(node: ast.AST) -> float:
+        if isinstance(node, ast.Expression):
+            return visit(node.body)
+        if isinstance(node, ast.Constant) and type(node.value) in (int, float):
+            return node.value
+        if isinstance(node, ast.Name):
+            if node.id not in variables:
+                raise ValueError(f"unknown variable {node.id!r}; pass --var {node.id}=VALUE")
+            return variables[node.id]
+        if isinstance(node, ast.BinOp) and type(node.op) in _ARITHMETIC_OPERATORS:
+            left, right = visit(node.left), visit(node.right)
+            if isinstance(node.op, ast.Pow) and abs(right) > 64:
+                raise ValueError("exponent too large")
+            return _ARITHMETIC_OPERATORS[type(node.op)](left, right)
+        if isinstance(node, ast.UnaryOp) and type(node.op) in _ARITHMETIC_OPERATORS:
+            return _ARITHMETIC_OPERATORS[type(node.op)](visit(node.operand))
+        raise ValueError(f"unsupported syntax: {type(node).__name__}")
+
+    return float(visit(ast.parse(expr, mode="eval")))
+
+
+def _parse_variables(values: list[str] | None) -> dict[str, float]:
+    variables = {}
+    for item in values or ():
+        name, separator, value = item.partition("=")
+        if not separator or not name.isidentifier():
+            raise ValueError(f"--var expects NAME=VALUE, got {item!r}")
+        variables[name] = safe_arithmetic(value)
+    return variables
+
+
+def _eval_expr(expr: str, label: str, variables: dict[str, float] | None = None) -> float:
+    """Evaluate a numeric arithmetic expression (no code execution)."""
     try:
-        return float(eval(expr))
-    except Exception as exc:
+        return safe_arithmetic(expr, variables)
+    except (ValueError, SyntaxError, ZeroDivisionError, OverflowError) as exc:
         print(f"Error: failed to evaluate {label} expression: {exc}")
         sys.exit(1)
 
@@ -516,7 +564,7 @@ def _print_roofline_result(roofline: dict, gpu: str, dtype: str):
     )
 
     print(f"\n{'='*64}")
-    print(f"  Tile-level Roofline Analysis")
+    print("  Tile-level Roofline Analysis")
     print(f"{'='*64}")
     print(f"  GPU              : {gpu.upper()} ({desc})")
     print(f"  dtype          : {dtype}")
@@ -524,7 +572,7 @@ def _print_roofline_result(roofline: dict, gpu: str, dtype: str):
     print(f"  Tile Bytes       : {roofline['bytes_transferred']:.2e}")
     print(f"  Tile AI          : {roofline['arithmetic_intensity']:.2f} FLOPs/Byte")
     print(f"  Ridge Point      : {roofline['ridge_point']:.2f} FLOPs/Byte")
-    print(f"  ─────────────────────────────────────────")
+    print("  ─────────────────────────────────────────")
     print(f"  Bottleneck       : {bottleneck_label}")
     print(f"{'='*64}")
 
@@ -534,7 +582,7 @@ def _print_compute_utilization(result: dict):
     desc = HARDWARE_SPECS[result["gpu"].lower()].get("description", "")
 
     print(f"\n{'='*64}")
-    print(f"  Compute Utilization Analysis (Compute Bound)")
+    print("  Compute Utilization Analysis (Compute Bound)")
     print(f"{'='*64}")
     print(f"  GPU              : {result['gpu'].upper()} ({desc})")
     print(f"  dtype          : {result['dtype']}")
@@ -551,7 +599,7 @@ def _print_bandwidth_utilization(result: dict):
     desc = HARDWARE_SPECS[result["gpu"].lower()].get("description", "")
 
     print(f"\n{'='*64}")
-    print(f"  Bandwidth Utilization Analysis (Memory Bound)")
+    print("  Bandwidth Utilization Analysis (Memory Bound)")
     print(f"{'='*64}")
     print(f"  GPU              : {result['gpu'].upper()} ({desc})")
     print(f"  Bytes transferred: {result['bytes_transferred']:.2e}")
@@ -588,10 +636,12 @@ def main():
     parser.add_argument("--wrapper-name", help="wrapper function name")
     parser.add_argument("--setup-name", help="setup function name")
 
-    parser.add_argument("--flops-expr", help="FLOPs expression (Python expression)")
+    parser.add_argument("--flops-expr", help="FLOPs arithmetic expression, e.g. 2*BM*BN*K")
+    parser.add_argument("--var", action="append", metavar="NAME=VALUE",
+                        help="Variable for --flops-expr/--bytes-expr (repeatable)")
     parser.add_argument("--flops", type=float, help="FLOPs value")
 
-    parser.add_argument("--bytes-expr", help="Bytes transferred expression (Python expression)")
+    parser.add_argument("--bytes-expr", help="Bytes arithmetic expression, e.g. (BM*K + BN*K + BM*BN)*2")
     parser.add_argument("--bytes", type=float, help="Bytes transferred value")
 
     parser.add_argument("--measured-bandwidth-tb-s", type=float,
@@ -647,7 +697,7 @@ def main():
     if args.flops is not None:
         flops = args.flops
     elif args.flops_expr:
-        flops = _eval_expr(args.flops_expr, "FLOPs")
+        flops = _eval_expr(args.flops_expr, "FLOPs", _parse_variables(args.var))
     else:
         print("Error: provide --flops or --flops-expr")
         sys.exit(1)
@@ -657,7 +707,7 @@ def main():
     if args.bytes is not None:
         bytes_transferred = args.bytes
     elif args.bytes_expr:
-        bytes_transferred = _eval_expr(args.bytes_expr, "Bytes")
+        bytes_transferred = _eval_expr(args.bytes_expr, "Bytes", _parse_variables(args.var))
 
     # ──  Hardware and launch shape ──
     gpu = args.gpu.lower()

@@ -141,27 +141,66 @@ killall() {
 }
 
 _atrex_guarded_python() {
+    # Guardrail, not a security boundary: `env python3`, absolute interpreter
+    # paths and scripts that import GPU modules are not inspected here.  Real
+    # isolation comes from the Bubblewrap Agent sandbox (sandbox=bwrap/auto).
     local executable="$1"
     shift
     local -a original=("$@")
-    local value code="" code_index=-1 index
-    for ((index = 0; index < ${#original[@]}; index++)); do
+    local value code="" module="" code_index=-1 cluster_prefix="" index chars char rest offset
+    local count=${#original[@]}
+    for ((index = 0; index < count; index++)); do
         value="${original[index]}"
         case "$value" in
-            -m)
-                # The module and its worker argv are owned by Execution.
-                break
-                ;;
             -c)
                 code_index="$index"
                 code="${original[index + 1]:-}"
                 break
                 ;;
-            --)
+            -m)
+                module="${original[index + 1]:-}"
                 break
                 ;;
-            -*)
-                shift
+            -W|-X|--check-hash-based-pycs)
+                # These options consume the next argument; it is not a script.
+                index=$((index + 1))
+                ;;
+            --|-)
+                break
+                ;;
+            --*)
+                ;;
+            -?*)
+                # Short-option cluster such as -Bc CODE, -uW ignore or -Im mod.
+                chars="${value#-}"
+                for ((offset = 0; offset < ${#chars}; offset++)); do
+                    char="${chars:offset:1}"
+                    rest="${chars:offset + 1}"
+                    case "$char" in
+                        c)
+                            code_index="$index"
+                            cluster_prefix="${chars:0:offset}"
+                            if [[ -n "$rest" ]]; then
+                                code="$rest"
+                                # Normalize "-cCODE" so the code is one argument.
+                                original[index]="-c"
+                                original=("${original[@]:0:index + 1}" "$code" "${original[@]:index + 1}")
+                            else
+                                code="${original[index + 1]:-}"
+                                original[index]="-c"
+                            fi
+                            break 2
+                            ;;
+                        m)
+                            if [[ -n "$rest" ]]; then module="$rest"; else module="${original[index + 1]:-}"; fi
+                            break 2
+                            ;;
+                        W|X)
+                            [[ -n "$rest" ]] || index=$((index + 1))
+                            break
+                            ;;
+                    esac
+                done
                 ;;
             *)
                 # A script path comes before any nested command arguments.
@@ -169,34 +208,40 @@ _atrex_guarded_python() {
                 ;;
         esac
     done
-    if _atrex_python_code_imports_blocked_module "$code"; then
+    if [[ -n "$module" ]] && _atrex_python_module_is_blocked "$module"; then
+        echo "atrex policy: host kernel/JIT-capable GPU imports must run through python -m aka.legacy.execution.cli" >&2
+        return 126
+    fi
+    if (( code_index >= 0 )) && _atrex_python_code_imports_blocked_module "$code"; then
         echo "atrex policy: host kernel/JIT-capable GPU imports must run through python -m aka.legacy.execution.cli" >&2
         return 126
     fi
     if (( code_index >= 0 )); then
-        # Feed allowed snippets through stdin so an older, already-running
-        # optimizer's process guard cannot regex-match prose embedded in the
-        # command line.  Preserve interpreter flags before -c and user args
-        # after the code string.  Nested sandbox commands never enter this
-        # branch because their first argument is python -m aka.legacy.execution.cli.
+        # Keep the snippet off the command line so an older, already-running
+        # optimizer's process guard cannot regex-match prose embedded in it,
+        # but pass it through the environment rather than stdin: stdin stays
+        # available to the snippet (`cat x.json | python3 -c ...`) and
+        # sys.argv[0] stays "-c".  The variable is removed before the snippet
+        # runs, so child processes never inherit it.
         local -a prefix=("${original[@]:0:code_index}")
         local -a trailing=("${original[@]:code_index + 2}")
-        # macOS still ships Bash 3.2. Under `set -u`, expanding an empty
-        # array raises "unbound variable", so only expand arrays proven
-        # non-empty. This matters for the common `python -c CODE` shape,
-        # where both prefix and trailing are empty.
-        if (( ${#prefix[@]} > 0 && ${#trailing[@]} > 0 )); then
-            printf '%s\n' "$code" | command "$executable" "${prefix[@]}" - "${trailing[@]}"
-        elif (( ${#prefix[@]} > 0 )); then
-            printf '%s\n' "$code" | command "$executable" "${prefix[@]}" -
-        elif (( ${#trailing[@]} > 0 )); then
-            printf '%s\n' "$code" | command "$executable" - "${trailing[@]}"
-        else
-            printf '%s\n' "$code" | command "$executable" -
-        fi
+        [[ -n "$cluster_prefix" ]] && prefix+=("-${cluster_prefix}")
+        # macOS ships Bash 3.2: under `set -u` an empty "${array[@]}" is an
+        # unbound-variable error, hence the ${array[@]+...} expansions.
+        _ATREX_GUARDED_CODE="$code" command "$executable" \
+            ${prefix[@]+"${prefix[@]}"} \
+            -c 'exec(compile(__import__("os").environ.pop("_ATREX_GUARDED_CODE"), "<string>", "exec"))' \
+            ${trailing[@]+"${trailing[@]}"}
         return $?
     fi
-    command "$executable" "${original[@]}"
+    command "$executable" ${original[@]+"${original[@]}"}
+}
+
+_atrex_python_module_is_blocked() {
+    case "${1%%.*}" in
+        kernel|flashinfer|flash_attn|xformers|vllm) return 0 ;;
+        *) return 1 ;;
+    esac
 }
 
 _atrex_python_code_imports_blocked_module() {
@@ -268,5 +313,5 @@ python3.10() {
 readonly -f _atrex_deny_gateway_action _atrex_is_gateway_path
 readonly -f _atrex_is_tracked_workspace_path _atrex_deny_tracked_delete
 readonly -f screen rm rmdir mv truncate pkill killall
-readonly -f _atrex_python_code_imports_blocked_module
+readonly -f _atrex_python_code_imports_blocked_module _atrex_python_module_is_blocked
 readonly -f _atrex_guarded_python python python3 python3.10

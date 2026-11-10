@@ -253,7 +253,7 @@ def main():
 
     # ── Output results ──
     print(f"\n{'='*64}")
-    print(f"  Measured Bandwidth Ceiling Result (Gluon memcpy kernel)")
+    print("  Measured Bandwidth Ceiling Result (Gluon memcpy kernel)")
     print(f"{'='*64}")
     print(f"  hardware backend          : {result['hardware_backend']}")
     print(f"  dtype          : {args.dtype}")
@@ -261,13 +261,13 @@ def main():
     print(f"  total read/write volume          : {result['actual_bytes_rw'] / 1e6:.1f} MB (read + write)")
     print(f"  memcpy latency       : {result['time_ms']:.4f} ms")
     print(f"  measured bandwidth ceiling      : {result['bandwidth_tb_s']:.3f} TB/s")
-    print(f"  ─────────────────────────────────────────")
+    print("  ─────────────────────────────────────────")
     print(f"  kernel parameters       : XBLOCK={result['xblock']}, R={result['r_value']}, "
           f"num_warps={result['num_warps']}")
     print(f"{'='*64}")
 
     if args.emit_flag:
-        print(f"\nFor compute_utilization.py:")
+        print("\nFor compute_utilization.py:")
         print(f"  --measured-bandwidth-tb-s {result['bandwidth_tb_s']:.3f}")
 
 
